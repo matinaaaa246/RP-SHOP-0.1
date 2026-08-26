@@ -4,3 +4,5 @@ python-dotenv==1.0.1
 Flask
 pyTelegramBotAPI
 imageio-ffmpeg==0.5.1
+flask
+threading
