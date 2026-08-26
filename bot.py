@@ -65,6 +65,25 @@ from schedule_parser import parse_schedule_time, TEHRAN_TZ
 MIN_REEL_FPS = 23
 TARGET_FPS = 30
 
+# ایمپورت کردن تابعی که در فایل قبل ساختیم
+from keep_alive import keep_alive
+import telebot # یا هر کتابخانه‌ای که برای رباتت استفاده می‌کنی
+
+# --- کدهای ربات تو اینجا قرار دارد ---
+bot = telebot.TeleBot("8771997281:AAHN8DrtaOItF988m_f_ILLK6xouWQ4gT0Y")
+
+@bot.message_handler(commands=['start'])
+def send_welcome(message):
+    bot.reply_to(message, "سلام! من بیدار هستم.")
+
+if __name__ == "__main__":
+    # اول سرور فیک را روشن می‌کنیم
+    keep_alive()
+    
+    # بعد ربات را اجرا می‌کنیم
+    print("Bot started...")
+    bot.polling(none_stop=True)
+
 
 def _log_actual_fps(ffmpeg_exe: str, path: str) -> None:
     """فقط برای دیباگ: fps واقعیِ فایل خروجی رو با خوندن stderr خود ffmpeg
