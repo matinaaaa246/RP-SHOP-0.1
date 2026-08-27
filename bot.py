@@ -6,8 +6,8 @@ import subprocess
 import tempfile
 
 import imageio_ffmpeg
-from dotenv import load_dotenv
 
+from dotenv import load_dotenv
 load_dotenv()
 
 from telegram import (
@@ -33,59 +33,9 @@ from buffer_publisher import publish_to_instagram, publish_video_to_instagram
 from image_host import upload_image
 import publitio_host
 from schedule_parser import parse_schedule_time, TEHRAN_TZ
-from shop_profile_store import get_profile as get_shop_profile, set_profile as set_shop_profile, all_chat_ids as shop_profile_chat_ids
-import post_history_store
-import instagram_stats
 
 MIN_REEL_FPS = 23
 TARGET_FPS = 30
-MIN_REEL_SECONDS = 3.5
-
-SHOP_TELEGRAM_BOT_TOKEN = os.environ["SHOP_TELEGRAM_BOT_TOKEN"]
-TELEGRAM_PROXY_URL = os.environ.get("HTTPS_PROXY") or os.environ.get("HTTP_PROXY")
-AI_API_KEY = os.environ["AI_API_KEY"]
-AI_API_URL = os.environ["AI_API_URL"]
-AI_MODEL = os.environ["AI_MODEL"]
-BUFFER_API_KEY = os.environ["BUFFER_API_KEY"]
-BUFFER_CHANNEL_ID = os.environ["BUFFER_CHANNEL_ID"]
-IG_SCRAPER_USERNAME = os.environ.get("IG_SCRAPER_USERNAME")
-SHOP_INSTAGRAM_USERNAME = os.environ.get("SHOP_INSTAGRAM_USERNAME")
-
-STATS_CACHE_MINUTES = 30
-AUTOLINK_FIRST_MARGIN_SECONDS = 150
-AUTOLINK_RETRY_DELAYS_SECONDS = [120, 120, 120, 120, 3600, 3600, 3600, 3600, 3600, 3600]
-ALBUM_DEBOUNCE_SECONDS = 1.5
-MAX_POSTS_PER_DAY = 9
-
-MENU_NEW = "🆕 محصول جدید"
-MENU_HISTORY = "📋 تاریخچه"
-MENU_SCHEDULED = "🕒 زمان‌بندی‌شده‌ها"
-MENU_PRODUCTS = "🗂 محصولات"
-MENU_PROFILE = "⚙️ پروفایل فروشگاه"
-MENU_STATS = "📈 آمار زنده‌ی پست"
-MENU_DASHBOARD = "🚀 عملکرد پیج"
-
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
-MAIN_MENU_KEYBOARD = ReplyKeyboardMarkup(
-    [
-        [MENU_NEW],
-        [MENU_HISTORY, MENU_SCHEDULED],
-        [MENU_PRODUCTS, MENU_PROFILE],
-        [MENU_STATS, MENU_DASHBOARD],
-    ],
-    resize_keyboard=True,
-)
-
-awaiting_product: dict[int, bool] = {}
-collecting: dict[int, dict] = {}
-pending_posts: dict[str, dict] = {}
-awaiting_caption_edit: dict[int, str] = {}
-awaiting_schedule_time: dict[int, str] = {}
-awaiting_link_confirm: dict[int, dict] = {}
-awaiting_stats_link: dict[int, bool] = {}
-
 
 def _log_actual_fps(ffmpeg_exe: str, path: str) -> None:
     try:
@@ -99,6 +49,7 @@ def _log_actual_fps(ffmpeg_exe: str, path: str) -> None:
     except Exception:
         logger.exception("خوندن fps واقعی برای دیباگ شکست خورد.")
 
+MIN_REEL_SECONDS = 3.5
 
 def _get_duration_seconds(ffmpeg_exe: str, path: str) -> "float | None":
     try:
@@ -115,7 +66,6 @@ def _get_duration_seconds(ffmpeg_exe: str, path: str) -> "float | None":
     except Exception:
         logger.exception("خوندن مدت‌زمان ویدیو شکست خورد.")
     return None
-
 
 def _ensure_min_duration(ffmpeg_exe: str, input_path: str) -> str:
     duration = _get_duration_seconds(ffmpeg_exe, input_path)
@@ -143,7 +93,6 @@ def _ensure_min_duration(ffmpeg_exe: str, input_path: str) -> str:
         logger.exception("کشیدن ویدیو به حداقل مدت‌زمان شکست خورد؛ ویدیوی اصلی بدون تغییر آپلود می‌شه.")
         return input_path
 
-
 def _ensure_reel_fps(input_path: str) -> str:
     output_path = input_path.rsplit(".", 1)[0] + "_fixedfps.mp4"
     try:
@@ -167,7 +116,63 @@ def _ensure_reel_fps(input_path: str) -> str:
     except Exception:
         logger.exception("ری‌انکود ویدیو برای اصلاح fps شکست خورد؛ ویدیوی اصلی بدون تغییر آپلود می‌شه.")
         return input_path
+from shop_profile_store import get_profile as get_shop_profile, set_profile as set_shop_profile, all_chat_ids as shop_profile_chat_ids
+import post_history_store
+import instagram_stats
 
+SHOP_TELEGRAM_BOT_TOKEN = os.environ["SHOP_TELEGRAM_BOT_TOKEN"]
+TELEGRAM_PROXY_URL = os.environ.get("HTTPS_PROXY") or os.environ.get("HTTP_PROXY")
+AI_API_KEY = os.environ["AI_API_KEY"]
+AI_API_URL = os.environ["AI_API_URL"]
+AI_MODEL = os.environ["AI_MODEL"]
+BUFFER_API_KEY = os.environ["BUFFER_API_KEY"]
+BUFFER_CHANNEL_ID = os.environ["BUFFER_CHANNEL_ID"]
+IG_SCRAPER_USERNAME = os.environ.get("IG_SCRAPER_USERNAME")
+SHOP_INSTAGRAM_USERNAME = os.environ.get("SHOP_INSTAGRAM_USERNAME")
+
+STATS_CACHE_MINUTES = 30
+
+AUTOLINK_FIRST_MARGIN_SECONDS = 150
+AUTOLINK_RETRY_DELAYS_SECONDS = [120, 120, 120, 120, 3600, 3600, 3600, 3600, 3600, 3600]
+
+ALBUM_DEBOUNCE_SECONDS = 1.5
+
+MAX_POSTS_PER_DAY = 9
+
+MENU_NEW = "🆕 محصول جدید"
+MENU_HISTORY = "📋 تاریخچه"
+MENU_SCHEDULED = "🕒 زمان‌بندی‌شده‌ها"
+MENU_PRODUCTS = "🗂 محصولات"
+MENU_PROFILE = "⚙️ پروفایل فروشگاه"
+MENU_STATS = "📈 آمار زنده‌ی پست"
+MENU_DASHBOARD = "🚀 عملکرد پیج"
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+MAIN_MENU_KEYBOARD = ReplyKeyboardMarkup(
+    [
+        [MENU_NEW],
+        [MENU_HISTORY, MENU_SCHEDULED],
+        [MENU_PRODUCTS, MENU_PROFILE],
+        [MENU_STATS, MENU_DASHBOARD],
+    ],
+    resize_keyboard=True,
+)
+
+awaiting_product: dict[int, bool] = {}
+
+collecting: dict[int, dict] = {}
+
+pending_posts: dict[str, dict] = {}
+
+awaiting_caption_edit: dict[int, str] = {}
+
+awaiting_schedule_time: dict[int, str] = {}
+
+awaiting_link_confirm: dict[int, dict] = {}
+
+awaiting_stats_link: dict[int, bool] = {}
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
@@ -184,7 +189,6 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=MAIN_MENU_KEYBOARD,
     )
 
-
 async def new_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     awaiting_product[chat_id] = True
@@ -196,7 +200,6 @@ async def new_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "مثال: «کیف چرم قهوه‌ای، قیمت ۸۵۰,۰۰۰ تومان، جنس چرم طبیعی»",
         reply_markup=MAIN_MENU_KEYBOARD,
     )
-
 
 async def profile_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
@@ -224,7 +227,6 @@ async def profile_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "/profile کیف و کفش چرم دست‌دوز، لحن گرم و صمیمی، همیشه رو کیفیت "
             "جنس تاکید کن"
         )
-
 
 async def photo_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
@@ -258,7 +260,6 @@ async def photo_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
         name=f"finalize_{chat_id}",
         data={"chat_id": chat_id},
     )
-
 
 async def video_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
@@ -294,7 +295,6 @@ async def video_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
         data={"chat_id": chat_id},
     )
 
-
 async def _download_with_retry(tg_file, tmp_path: str, attempts: int = 4):
     for attempt in range(1, attempts + 1):
         try:
@@ -309,7 +309,6 @@ async def _download_with_retry(tg_file, tmp_path: str, attempts: int = 4):
                 f"{wait} ثانیه صبر و تلاش دوباره..."
             )
             await asyncio.sleep(wait)
-
 
 async def finalize_submission(context: ContextTypes.DEFAULT_TYPE):
     chat_id = context.job.data["chat_id"]
@@ -331,7 +330,7 @@ async def finalize_submission(context: ContextTypes.DEFAULT_TYPE):
     is_video = bool(data.get("video_file_id"))
     await context.bot.send_message(
         chat_id,
-        "⏳ در حال آپلود ویدیو و ساخت کپشن..." if is_video else "⏳ در حال آپلود عکس‌ها و ساخت کپشن...",
+        "⏳ در حال آپلود ویدیو، صبر برای آماده شدنش رو Publitio و ساخت کپشن..." if is_video else "⏳ در حال آپلود عکس‌ها و ساخت کپشن...",
     )
 
     try:
@@ -372,7 +371,6 @@ async def finalize_submission(context: ContextTypes.DEFAULT_TYPE):
         logger.exception("خطا در پردازش ارسال محصول")
         await context.bot.send_message(chat_id, f"❌ خطا: {e}")
 
-
 async def _send_caption_result(
     context,
     chat_id,
@@ -405,7 +403,6 @@ async def _send_caption_result(
     }
     await _send_decision_keyboard(context, chat_id, post_id)
 
-
 async def _send_decision_keyboard(
     context, chat_id, post_id: str, prompt: str = "برای تایید، بازسازی، ویرایش یا لغو این پست:"
 ):
@@ -421,14 +418,12 @@ async def _send_decision_keyboard(
     )
     await context.bot.send_message(chat_id, prompt, reply_markup=keyboard)
 
-
 async def _send_timing_keyboard(context, chat_id, post_id: str):
     keyboard = InlineKeyboardMarkup([[
         InlineKeyboardButton("🚀 همین الان بفرست", callback_data=f"send_now:{post_id}"),
         InlineKeyboardButton("🕒 زمان‌بندی کن", callback_data=f"schedule:{post_id}"),
     ]])
     await context.bot.send_message(chat_id, "چه زمانی منتشر بشه؟", reply_markup=keyboard)
-
 
 async def _autolink_job(context: ContextTypes.DEFAULT_TYPE):
     job_data = context.job.data
@@ -466,7 +461,6 @@ async def _autolink_job(context: ContextTypes.DEFAULT_TYPE):
             "وگرنه بدون آمار می‌مونه — بدون هیچ پیامی به کاربر."
         )
 
-
 def _schedule_autolink(context, chat_id: int, caption: str, buffer_post_id: str, result: dict) -> None:
     if not IG_SCRAPER_USERNAME or not SHOP_INSTAGRAM_USERNAME or not buffer_post_id:
         return
@@ -493,7 +487,6 @@ def _schedule_autolink(context, chat_id: int, caption: str, buffer_post_id: str,
             "attempt": 1,
         },
     )
-
 
 async def _publish_post(context, chat_id, post_id: str, status_message, due_at=None):
     post = pending_posts.get(post_id)
@@ -563,7 +556,6 @@ async def _publish_post(context, chat_id, post_id: str, status_message, due_at=N
         awaiting_caption_edit.pop(chat_id, None)
         awaiting_schedule_time.pop(chat_id, None)
 
-
 async def _handle_regenerate_final(context, chat_id, post_id: str, query):
     post = pending_posts.get(post_id)
     if not post:
@@ -587,7 +579,6 @@ async def _handle_regenerate_final(context, chat_id, post_id: str, query):
     except Exception as e:
         logger.warning(f"دوباره‌سازی کپشن نهایی خطا داد: {e}")
         await query.edit_message_text(f"⚠️ ساخت نسخه‌ی جدید خطا داد:\n{e}")
-
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -684,7 +675,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-
 async def text_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     text = update.message.text.strip()
@@ -759,7 +749,6 @@ async def text_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await _publish_post(context, chat_id, post_id, status_message, due_at=due_at)
         return
 
-
 def _format_stats_line(stats: "dict | None", had_error: bool = False) -> str:
     if not stats:
         if had_error:
@@ -774,7 +763,6 @@ def _format_stats_line(stats: "dict | None", had_error: bool = False) -> str:
         return "" if had_error else "\nℹ️ آمار این پست هنوز آماده نیست"
     suffix = " 🕓" if stats.get("source") == "buffer" else ""
     return "\n" + " — ".join(parts) + suffix
-
 
 def _get_cached_or_fresh_stats(chat_id: int, entry: dict) -> "tuple[dict | None, bool]":
     cached = entry.get("stats")
@@ -807,7 +795,6 @@ def _get_cached_or_fresh_stats(chat_id: int, entry: dict) -> "tuple[dict | None,
         return fresh, False
 
     return cached, had_error
-
 
 async def stats_dashboard_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
@@ -865,7 +852,6 @@ async def stats_dashboard_command(update: Update, context: ContextTypes.DEFAULT_
 
     await status_message.edit_text("\n".join(lines))
 
-
 async def history_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     entries = post_history_store.get_history(chat_id, limit=10)
@@ -883,7 +869,6 @@ async def history_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"«{e['caption_preview']}...»{_format_stats_line(stats, had_error)}"
         )
     await update.message.reply_text("\n\n".join(lines))
-
 
 async def _lookup_and_format_stats(url: str) -> "tuple[str | None, str | None]":
     if not IG_SCRAPER_USERNAME:
@@ -907,14 +892,12 @@ async def _lookup_and_format_stats(url: str) -> "tuple[str | None, str | None]":
         lines.append(f"👁 {stats['views']:,} ویو")
     return "\n".join(lines), None
 
-
 async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         await update.message.reply_text("لینک پست رو بعد از دستور بفرست، مثلاً:\n/stats https://www.instagram.com/p/ABC123/")
         return
     text, error = await _lookup_and_format_stats(context.args[0])
     await update.message.reply_text(error or text)
-
 
 async def stats_menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
@@ -931,7 +914,6 @@ async def stats_menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         "کامنت، و برای ویدیو/ریلز، تعدادِ ویو رو همین الان و به‌صورتِ زنده "
         "برات میارم. ⚡"
     )
-
 
 async def products_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
@@ -957,7 +939,6 @@ async def products_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             media[0] = InputMediaPhoto(image_urls[0], caption=caption)
             await update.message.reply_media_group(media=media)
 
-
 async def scheduled_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     entries = post_history_store.get_scheduled(chat_id)
@@ -977,7 +958,6 @@ async def scheduled_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await update.message.reply_text(caption, reply_markup=keyboard)
 
-
 MENU_HANDLERS = {
     MENU_NEW: new_command,
     MENU_HISTORY: history_command,
@@ -987,7 +967,6 @@ MENU_HANDLERS = {
     MENU_STATS: stats_menu_command,
     MENU_DASHBOARD: stats_dashboard_command,
 }
-
 
 async def weekly_report_job(context: ContextTypes.DEFAULT_TYPE):
     since = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=7)
@@ -1003,7 +982,6 @@ async def weekly_report_job(context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             logger.warning(f"ارسال گزارش هفتگی به چت {chat_id} خطا داد: {e}")
 
-
 async def inactivity_reminder_job(context: ContextTypes.DEFAULT_TYPE):
     since = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=2)
     known_chat_ids = set(post_history_store.all_chat_ids()) | set(shop_profile_chat_ids())
@@ -1018,7 +996,6 @@ async def inactivity_reminder_job(context: ContextTypes.DEFAULT_TYPE):
             )
         except Exception as e:
             logger.warning(f"ارسال یادآوری بی‌فعالیتی به چت {chat_id} خطا داد: {e}")
-
 
 def _reschedule_pending_autolinks(job_queue) -> None:
     if not IG_SCRAPER_USERNAME or not SHOP_INSTAGRAM_USERNAME:
@@ -1057,7 +1034,6 @@ def _reschedule_pending_autolinks(job_queue) -> None:
             "دوباره تو صفِ پیدا‌کردنِ خودکارِ لینک گذاشته شد."
         )
 
-
 def main():
     builder = (
         ApplicationBuilder()
@@ -1070,7 +1046,6 @@ def main():
     if TELEGRAM_PROXY_URL:
         builder = builder.proxy(TELEGRAM_PROXY_URL).get_updates_proxy(TELEGRAM_PROXY_URL)
         logger.info(f"در حال استفاده از پروکسی برای اتصال به تلگرام: {TELEGRAM_PROXY_URL}")
-        
     app = builder.build()
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("menu", start_command))
@@ -1084,7 +1059,6 @@ def main():
     app.add_handler(MessageHandler(filters.VIDEO | filters.ANIMATION, video_received))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_received))
     app.add_handler(CallbackQueryHandler(button_callback))
-    
     app.job_queue.run_daily(
         weekly_report_job,
         time=datetime.time(hour=10, minute=0, tzinfo=TEHRAN_TZ),
@@ -1096,17 +1070,14 @@ def main():
         time=datetime.time(hour=11, minute=0, tzinfo=TEHRAN_TZ),
         name="inactivity_reminder",
     )
-    
     publitio_host.start_background_cleaner()
 
     _reschedule_pending_autolinks(app.job_queue)
 
     logger.info("بات فروشگاه (مستقل) روشن شد...")
-    
-    # حل ارور RuntimeError مربوط به پایتون 3.14 و Event Loop
+
     asyncio.set_event_loop(asyncio.new_event_loop())
     app.run_polling()
-
 
 if __name__ == "__main__":
     main()
