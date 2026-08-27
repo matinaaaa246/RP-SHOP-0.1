@@ -27,6 +27,9 @@ from telegram.ext import (
     filters,
 )
 
+from flask import Flask
+from threading import Thread
+
 from rewriter import generate_caption
 import buffer_publisher
 from buffer_publisher import publish_to_instagram, publish_video_to_instagram
@@ -36,6 +39,9 @@ from schedule_parser import parse_schedule_time, TEHRAN_TZ
 
 MIN_REEL_FPS = 23
 TARGET_FPS = 30
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 def _log_actual_fps(ffmpeg_exe: str, path: str) -> None:
     try:
@@ -116,6 +122,7 @@ def _ensure_reel_fps(input_path: str) -> str:
     except Exception:
         logger.exception("ری‌انکود ویدیو برای اصلاح fps شکست خورد؛ ویدیوی اصلی بدون تغییر آپلود می‌شه.")
         return input_path
+
 from shop_profile_store import get_profile as get_shop_profile, set_profile as set_shop_profile, all_chat_ids as shop_profile_chat_ids
 import post_history_store
 import instagram_stats
@@ -147,8 +154,6 @@ MENU_PROFILE = "⚙️ پروفایل فروشگاه"
 MENU_STATS = "📈 آمار زنده‌ی پست"
 MENU_DASHBOARD = "🚀 عملکرد پیج"
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
 
 MAIN_MENU_KEYBOARD = ReplyKeyboardMarkup(
     [
@@ -161,17 +166,11 @@ MAIN_MENU_KEYBOARD = ReplyKeyboardMarkup(
 )
 
 awaiting_product: dict[int, bool] = {}
-
 collecting: dict[int, dict] = {}
-
 pending_posts: dict[str, dict] = {}
-
 awaiting_caption_edit: dict[int, str] = {}
-
 awaiting_schedule_time: dict[int, str] = {}
-
 awaiting_link_confirm: dict[int, dict] = {}
-
 awaiting_stats_link: dict[int, bool] = {}
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -457,7 +456,7 @@ async def _autolink_job(context: ContextTypes.DEFAULT_TYPE):
         total_attempts = len(AUTOLINK_RETRY_DELAYS_SECONDS) + 1
         logger.warning(
             f"بعد از {total_attempts} تلاش (~۶ ساعت)، لینکِ پستِ buffer_post_id={buffer_post_id} "
-            "پیدا نشد. آمارش تو /history از منبع fallback (بافر، در صورت وجود) نمایش داده می‌شه، "
+            "پیدا نشد. آمارش تو /history از منبع fallback (بافر، در صورت وجود) نمایش می‌شه، "
             "وگرنه بدون آمار می‌مونه — بدون هیچ پیامی به کاربر."
         )
 
@@ -1034,6 +1033,28 @@ def _reschedule_pending_autolinks(job_queue) -> None:
             "دوباره تو صفِ پیدا‌کردنِ خودکارِ لینک گذاشته شد."
         )
 
+# ==========================================
+# کدهای مربوط به مانیتورینگ و زنده نگه‌داشتن ربات روی رندر
+# ==========================================
+flask_app = Flask(__name__)
+
+# غیرفعال کردن لاگ‌های اضافی فلسک برای جلوگیری از شلوغ شدن کنسول
+flask_log = logging.getLogger('werkzeug')
+flask_log.setLevel(logging.ERROR)
+
+@flask_app.route('/')
+def home():
+    return "Bot is running perfectly!"
+
+def run_flask():
+    port = int(os.environ.get("PORT", 8080))
+    flask_app.run(host='0.0.0.0', port=port)
+
+def keep_alive():
+    t = Thread(target=run_flask)
+    t.start()
+# ==========================================
+
 def main():
     builder = (
         ApplicationBuilder()
@@ -1075,6 +1096,9 @@ def main():
     _reschedule_pending_autolinks(app.job_queue)
 
     logger.info("بات فروشگاه (مستقل) روشن شد...")
+
+    # سرور فلسک را اینجا در پس‌زمینه اجرا می‌کنیم
+    keep_alive()
 
     asyncio.set_event_loop(asyncio.new_event_loop())
     app.run_polling()
