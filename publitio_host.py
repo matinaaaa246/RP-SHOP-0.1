@@ -53,6 +53,40 @@ def _auth_params() -> dict:
 MAX_RETRIES = 3
 RETRY_DELAY_SECONDS = 5
 
+# بعد از آپلود، Publitio ویدیو رو async پردازش/انکود می‌کنه. اگه همون لحظه‌ی
+# اول لینک url_preview رو بگیریم و دست Buffer بدیم، ممکنه هنوز پردازش تموم
+# نشده باشه و به‌جای ویدیوی واقعی، صفحه/فایل placeholder با متن
+# «Processing Video... please wait and try again later» سرو بشه. برای همین
+# قبل از برگردوندن نتیجه، صبر می‌کنیم تا لینک واقعاً ویدیو سرو کنه.
+READY_MAX_WAIT_SECONDS = 300
+READY_POLL_INTERVAL_SECONDS = 5
+
+
+def _looks_ready(url_preview: str, timeout: int = 15) -> bool:
+    """چک می‌کنه url_preview الان واقعاً به یه فایل ویدیویی اشاره می‌کنه یا
+    هنوز placeholder پردازش (Processing Video...) برمی‌گردونه."""
+    try:
+        resp = requests.get(
+            url_preview,
+            timeout=timeout,
+            stream=True,
+            headers={"Range": "bytes=0-4096"},
+        )
+        content_type = resp.headers.get("Content-Type", "")
+        resp.close()
+        return resp.status_code in (200, 206) and content_type.startswith("video/")
+    except requests.exceptions.RequestException:
+        return False
+
+
+def _wait_until_ready(url_preview: str) -> bool:
+    deadline = time.time() + READY_MAX_WAIT_SECONDS
+    while time.time() < deadline:
+        if _looks_ready(url_preview):
+            return True
+        time.sleep(READY_POLL_INTERVAL_SECONDS)
+    return False
+
 
 def upload_video(video_path: str, timeout: int = 180) -> dict:
     """ویدیو رو آپلود می‌کنه و {"id": ..., "url_preview": ...} برمی‌گردونه.
@@ -85,6 +119,15 @@ def upload_video(video_path: str, timeout: int = 180) -> dict:
         raise RuntimeError(f"آپلود ویدیو به Publitio شکست خورد: {result}")
 
     url_preview = result.get("url_preview") or result.get("url_preview_original") or result.get("url_preview_full")
+
+    if url_preview and not _wait_until_ready(url_preview):
+        raise RuntimeError(
+            "ویدیو روی Publitio هنوز در حال پردازشه و بعد از "
+            f"{READY_MAX_WAIT_SECONDS} ثانیه صبر هم آماده نشد "
+            "(معمولاً به خاطر طول ویدیو یا شلوغیِ صف پردازش Publitio پیش میاد). "
+            "چند دقیقه دیگه دوباره امتحان کن."
+        )
+
     return {"id": result["id"], "url_preview": url_preview}
 
 
