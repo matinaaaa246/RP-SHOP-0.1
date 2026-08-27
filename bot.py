@@ -1,26 +1,3 @@
-"""
-بات فروشگاه — کاملاً مستقل از بات اخبار (توکن تلگرام جدا، بدون هیچ
-دستور یا کدی از بات اخبار). این همون باتیه که می‌تونی به مشتریِ
-فروشگاه بدی، بدون اینکه بات اخبار (یا حتی وجودش) رو ببینه.
-
-نحوه‌ی استفاده:
-1) /new
-2) بات می‌گه: عکس(ها) رو بفرست + یه توضیح کوتاه (اسم، قیمت، جنس، ...)
-3) کاربر یک یا چند عکس رو با هم (به‌صورت آلبوم تلگرام) می‌فرسته،
-   با یه کپشن روی یکی از عکس‌ها (مثلاً: «کیف چرم قهوه‌ای، قیمت ۸۵۰,۰۰۰ تومان»)
-4) بات همه‌ی عکس‌ها رو جمع می‌کنه و از AI یک کپشن قوی و مشتری‌پسند می‌سازه؛
-   کاربر می‌تونه تاییدش کنه، خودش دستی ویرایشش کنه، یا از AI بخواد دوباره
-   (با متن/هوک متفاوت) بسازدش
-5) با تایید، پست چندعکسی (یا تک‌عکسی اگه فقط یکی فرستاده بودی) به بافر
-   فرستاده می‌شه تا تو اینستاگرام منتشر بشه (فوری یا زمان‌بندی‌شده)
-
-دستور /profile هم یه زمینه‌ی ثابت فروشگاه (برند/جنس/لحن) رو ذخیره می‌کنه
-که AI هر بار بدون نیاز به توضیح دوباره، همونو رعایت کنه.
-
-دستور /products هم آرشیو محصولات قبلی رو با عکس کوچیک نشون می‌ده.
-
-اگه ۲ روز پشت‌سرهم پستی نره، یه یادآوری خودکار روزانه فرستاده می‌شه.
-"""
 import asyncio
 import datetime
 import logging
@@ -29,9 +6,9 @@ import subprocess
 import tempfile
 
 import imageio_ffmpeg
-
 from dotenv import load_dotenv
-load_dotenv()  # این باید قبل از import ماژول‌هایی باشه که موقع import، os.environ رو می‌خونن
+
+load_dotenv()
 
 from telegram import (
     Update,
@@ -56,20 +33,61 @@ from buffer_publisher import publish_to_instagram, publish_video_to_instagram
 from image_host import upload_image
 import publitio_host
 from schedule_parser import parse_schedule_time, TEHRAN_TZ
+from shop_profile_store import get_profile as get_shop_profile, set_profile as set_shop_profile, all_chat_ids as shop_profile_chat_ids
+import post_history_store
+import instagram_stats
 
-# اینستاگرام ریلز حداقل ۲۳ فریم بر ثانیه می‌خواد؛ خیلی از ویدیوهای تلگرام
-# (خصوصاً اسکرین‌رکورد یا فایل‌های فشرده‌شده) زیر این حدن و بافر مستقیم
-# ردشون می‌کنه با خطای "frame rate must be at least 23 fps". برای همین
-# قبل از آپلود، ویدیو رو با ffmpeg به ۳۰ فریم ری‌انکود می‌کنیم (نیاز به
-# نصب ffmpeg روی سرور: apt install ffmpeg).
 MIN_REEL_FPS = 23
 TARGET_FPS = 30
+MIN_REEL_SECONDS = 3.5
+
+SHOP_TELEGRAM_BOT_TOKEN = os.environ["SHOP_TELEGRAM_BOT_TOKEN"]
+TELEGRAM_PROXY_URL = os.environ.get("HTTPS_PROXY") or os.environ.get("HTTP_PROXY")
+AI_API_KEY = os.environ["AI_API_KEY"]
+AI_API_URL = os.environ["AI_API_URL"]
+AI_MODEL = os.environ["AI_MODEL"]
+BUFFER_API_KEY = os.environ["BUFFER_API_KEY"]
+BUFFER_CHANNEL_ID = os.environ["BUFFER_CHANNEL_ID"]
+IG_SCRAPER_USERNAME = os.environ.get("IG_SCRAPER_USERNAME")
+SHOP_INSTAGRAM_USERNAME = os.environ.get("SHOP_INSTAGRAM_USERNAME")
+
+STATS_CACHE_MINUTES = 30
+AUTOLINK_FIRST_MARGIN_SECONDS = 150
+AUTOLINK_RETRY_DELAYS_SECONDS = [120, 120, 120, 120, 3600, 3600, 3600, 3600, 3600, 3600]
+ALBUM_DEBOUNCE_SECONDS = 1.5
+MAX_POSTS_PER_DAY = 9
+
+MENU_NEW = "🆕 محصول جدید"
+MENU_HISTORY = "📋 تاریخچه"
+MENU_SCHEDULED = "🕒 زمان‌بندی‌شده‌ها"
+MENU_PRODUCTS = "🗂 محصولات"
+MENU_PROFILE = "⚙️ پروفایل فروشگاه"
+MENU_STATS = "📈 آمار زنده‌ی پست"
+MENU_DASHBOARD = "🚀 عملکرد پیج"
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+MAIN_MENU_KEYBOARD = ReplyKeyboardMarkup(
+    [
+        [MENU_NEW],
+        [MENU_HISTORY, MENU_SCHEDULED],
+        [MENU_PRODUCTS, MENU_PROFILE],
+        [MENU_STATS, MENU_DASHBOARD],
+    ],
+    resize_keyboard=True,
+)
+
+awaiting_product: dict[int, bool] = {}
+collecting: dict[int, dict] = {}
+pending_posts: dict[str, dict] = {}
+awaiting_caption_edit: dict[int, str] = {}
+awaiting_schedule_time: dict[int, str] = {}
+awaiting_link_confirm: dict[int, dict] = {}
+awaiting_stats_link: dict[int, bool] = {}
 
 
 def _log_actual_fps(ffmpeg_exe: str, path: str) -> None:
-    """فقط برای دیباگ: fps واقعیِ فایل خروجی رو با خوندن stderr خود ffmpeg
-    (که خط اطلاعات استریم رو چاپ می‌کنه) لاگ می‌کنه، تا مطمئن بشیم ری‌انکود
-    واقعاً fps درست تولید کرده."""
     try:
         probe = subprocess.run(
             [ffmpeg_exe, "-i", path],
@@ -82,12 +100,6 @@ def _log_actual_fps(ffmpeg_exe: str, path: str) -> None:
         logger.exception("خوندن fps واقعی برای دیباگ شکست خورد.")
 
 
-# اینستاگرام ریلز حداقل ۳ ثانیه طول می‌خواد؛ اگه ویدیوی ورودی کوتاه‌تر بود،
-# با فریز کردن فریم آخر تا این مدت کِشش می‌دیم (محتوا عوض نمی‌شه، فقط
-# چندتا فریم تکراری آخرش اضافه می‌شه).
-MIN_REEL_SECONDS = 3.5
-
-
 def _get_duration_seconds(ffmpeg_exe: str, path: str) -> "float | None":
     try:
         probe = subprocess.run(
@@ -97,7 +109,6 @@ def _get_duration_seconds(ffmpeg_exe: str, path: str) -> "float | None":
         for line in probe.stderr.splitlines():
             line = line.strip()
             if line.startswith("Duration:"):
-                # مثال: "Duration: 00:00:02.10, start: 0.000000, bitrate: ..."
                 time_str = line.split("Duration:")[1].split(",")[0].strip()
                 h, m, s = time_str.split(":")
                 return int(h) * 3600 + int(m) * 60 + float(s)
@@ -107,13 +118,11 @@ def _get_duration_seconds(ffmpeg_exe: str, path: str) -> "float | None":
 
 
 def _ensure_min_duration(ffmpeg_exe: str, input_path: str) -> str:
-    """اگه ویدیو کوتاه‌تر از حداقل مجاز ریلز باشه، با فریز کردن فریم آخر
-    (tpad) و اضافه کردن سکوت صوتی (apad) تا اون حد کِشش می‌ده."""
     duration = _get_duration_seconds(ffmpeg_exe, input_path)
     if duration is None or duration >= MIN_REEL_SECONDS:
         return input_path
 
-    pad_seconds = MIN_REEL_SECONDS - duration + 0.2  # یه‌کم بیشتر برای اطمینان
+    pad_seconds = MIN_REEL_SECONDS - duration + 0.2
     output_path = input_path.rsplit(".", 1)[0] + "_padded.mp4"
     try:
         subprocess.run(
@@ -136,20 +145,6 @@ def _ensure_min_duration(ffmpeg_exe: str, input_path: str) -> str:
 
 
 def _ensure_reel_fps(input_path: str) -> str:
-    """ویدیو رو همیشه با fps ثابت (CFR) ری‌انکود می‌کنه، صرف‌نظر از این‌که
-    متادیتای fps ویدیوی ورودی چی می‌گه.
-
-    چرا «همیشه» و نه فقط وقتی fps کمه: ویدیوهای تلگرام/فوروارد شده اغلب
-    فریم‌ریت متغیر (VFR) دارن — یعنی متادیتا ممکنه بگه ۳۰fps، ولی فریم‌های
-    واقعی نامنظم پخش شدن؛ opencv/ffprobe همون عدد متادیتا (که خوب به نظر
-    می‌رسه) رو برمی‌گردونن، ولی بافر وقتی واقعی چک می‌کنه فریم‌ریت مؤثر رو
-    زیر ۲۳ می‌بینه و رد می‌کنه. راه مطمئن اینه که خروجی همیشه CFR واقعی
-    (-vsync cfr) با fps ثابت باشه، نه اینکه فقط بر اساس عدد نمایشی تصمیم
-    بگیریم.
-
-    از imageio-ffmpeg (باینری ffmpeg داخل پکیج پایتونی، بدون نیاز به نصب
-    سیستمی/apt) استفاده می‌کنه — رو Render هم بدون تغییر کار می‌کنه.
-    """
     output_path = input_path.rsplit(".", 1)[0] + "_fixedfps.mp4"
     try:
         ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
@@ -172,95 +167,6 @@ def _ensure_reel_fps(input_path: str) -> str:
     except Exception:
         logger.exception("ری‌انکود ویدیو برای اصلاح fps شکست خورد؛ ویدیوی اصلی بدون تغییر آپلود می‌شه.")
         return input_path
-from shop_profile_store import get_profile as get_shop_profile, set_profile as set_shop_profile, all_chat_ids as shop_profile_chat_ids
-import post_history_store
-import instagram_stats
-
-SHOP_TELEGRAM_BOT_TOKEN = os.environ["SHOP_TELEGRAM_BOT_TOKEN"]
-TELEGRAM_PROXY_URL = os.environ.get("HTTPS_PROXY") or os.environ.get("HTTP_PROXY")
-AI_API_KEY = os.environ["AI_API_KEY"]
-AI_API_URL = os.environ["AI_API_URL"]
-AI_MODEL = os.environ["AI_MODEL"]
-BUFFER_API_KEY = os.environ["BUFFER_API_KEY"]
-BUFFER_CHANNEL_ID = os.environ["BUFFER_CHANNEL_ID"]
-# اکانتِ فرعیِ اینستاگرام که برای خوندن لایک/ویو استفاده می‌شه (نه اکانت
-# اصلیِ شاپ). سشنش قبلاً یه‌بار با instagram_login.py ساخته شده.
-IG_SCRAPER_USERNAME = os.environ.get("IG_SCRAPER_USERNAME")
-# یوزرنیمِ پابلیکِ پیجِ اینستاگرامِ همین شاپ — لازمه تا بعد از انتشار،
-# بات خودش بره تو پروفایل و لینکِ تازه‌ترین پست رو خودکار پیدا کنه (بدون
-# اینکه لازم باشه کسی دستی لینک رو از اینستاگرام کپی/پیست کنه).
-SHOP_INSTAGRAM_USERNAME = os.environ.get("SHOP_INSTAGRAM_USERNAME")
-
-# چقدر آمارِ کش‌شده رو معتبر بدونیم قبل از اینکه دوباره بریم سراغ
-# اینستاگرام؛ کوتاه‌تر از این یعنی درخواست‌های بیشتر = ریسک بیشترِ ۴۲۹/قفل
-# شدنِ اکانتِ اسکرپر.
-STATS_CACHE_MINUTES = 30
-
-# بعد از انتشار، چند بار و با چه فاصله‌ای امتحان کنیم که لینکِ واقعیِ پست
-# رو تو پروفایل پیدا کنیم (ممکنه بافر/اینستاگرام چند دقیقه طول بکشه تا
-# پست واقعاً لایو بشه). ۴ تلاشِ سریع (هر ۲ دقیقه) و بعدش ۶ تلاشِ آروم‌تر
-# (هر ۱ ساعت) — یعنی جمعاً حدود ۶ ساعت فرصت قبل از اینکه بی‌خیال بشیم.
-AUTOLINK_FIRST_MARGIN_SECONDS = 150  # علاوه بر dueAt، این‌قدر بیشتر صبر کن
-AUTOLINK_RETRY_DELAYS_SECONDS = [120, 120, 120, 120, 3600, 3600, 3600, 3600, 3600, 3600]
-
-# چند ثانیه صبر کنه بعد از آخرین عکسِ یه آلبوم، قبل از این‌که مطمئن بشه
-# آلبوم تموم شده (چون تلگرام عکس‌های یه آلبوم رو تک‌تک و با فاصله‌ی کم می‌فرسته)
-ALBUM_DEBOUNCE_SECONDS = 1.5
-
-# حداکثر تعداد پست (منتشرشده یا زمان‌بندی‌شده) در هر روز؛ بیشتر از این با خطا رد می‌شه
-MAX_POSTS_PER_DAY = 9
-
-# برچسبِ دکمه‌های منوی ثابتِ پایین صفحه؛ با زدنشون دقیقاً همون کاری انجام
-# می‌شه که با دستور متنیِ معادلش انجام می‌شد (کاربر لازم نیست تایپ کنه)
-MENU_NEW = "🆕 محصول جدید"
-MENU_HISTORY = "📋 تاریخچه"
-MENU_SCHEDULED = "🕒 زمان‌بندی‌شده‌ها"
-MENU_PRODUCTS = "🗂 محصولات"
-MENU_PROFILE = "⚙️ پروفایل فروشگاه"
-MENU_STATS = "📈 آمار زنده‌ی پست"
-MENU_DASHBOARD = "🚀 عملکرد پیج"
-
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
-# کیبورد ثابتِ پایین صفحه‌ی چت؛ همیشه نمایش داده می‌مونه تا کاربر با یه لمس
-# بین بخش‌های مختلف بره، بدون این‌که لازم باشه دستورها رو حفظ/تایپ کنه
-MAIN_MENU_KEYBOARD = ReplyKeyboardMarkup(
-    [
-        [MENU_NEW],
-        [MENU_HISTORY, MENU_SCHEDULED],
-        [MENU_PRODUCTS, MENU_PROFILE],
-        [MENU_STATS, MENU_DASHBOARD],
-    ],
-    resize_keyboard=True,
-)
-
-# state هر چت: آیا منتظر عکس محصول هست یا نه
-awaiting_product: dict[int, bool] = {}
-
-# بافر موقت عکس‌ها/ویدیوی در حال جمع‌آوری، کلید = chat_id
-# {"file_ids": [...], "captions": [...], "video_file_id": None یا رشته}
-# هر پست یا فقط عکس(ها) داره یا فقط یک ویدیو (نه هر دو با هم، چون Reels
-# ترکیب ویدیو+عکس رو تو یه پست پشتیبانی نمی‌کنه)
-collecting: dict[int, dict] = {}
-
-# پیشنهادهای در انتظار تایید/ویرایش/لغو، کلید = شناسه‌ی پیامِ نمایش کپشن
-# {"chat_id":, "image_urls":, "raw_description":, "caption":}
-pending_posts: dict[str, dict] = {}
-
-# منتظرِ متنِ کپشنِ جدیدِ کاربر، کلید = chat_id، مقدار = post_id
-awaiting_caption_edit: dict[int, str] = {}
-
-# منتظرِ متنِ زمانِ زمان‌بندیِ کاربر، کلید = chat_id، مقدار = post_id
-awaiting_schedule_time: dict[int, str] = {}
-
-# لینکِ اینستاگرامی که کاربر دستی فرستاده و هنوز تاییدِ «مالِ همین پسته»
-# نگرفته، کلید = chat_id، مقدار = {"url":, "buffer_post_id":}
-awaiting_link_confirm: dict[int, dict] = {}
-
-# منتظرِ لینکی که کاربر بعد از زدنِ دکمه‌ی «📈 آمار زنده‌ی پست» قراره
-# بفرسته، کلید = chat_id (فقط True/وجود داشتن مهمه)
-awaiting_stats_link: dict[int, bool] = {}
 
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -341,8 +247,6 @@ async def photo_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.caption:
         collecting[chat_id]["captions"].append(update.message.caption)
 
-    # هر بار یه عکس جدید می‌رسه، تایمر قبلی رو کنسل و یه تایمر تازه ست می‌کنیم؛
-    # یعنی فقط وقتی ۱.۵ ثانیه هیچ عکس جدیدی نیومد، مطمئن می‌شیم آلبوم تموم شده
     current_jobs = context.job_queue.get_jobs_by_name(f"finalize_{chat_id}")
     for job in current_jobs:
         job.schedule_removal()
@@ -357,12 +261,6 @@ async def photo_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def video_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """مثل photo_received، ولی برای ویدیو (پستِ Reels). فقط یک ویدیو در هر
-    پست پشتیبانی می‌شه (نه چند ویدیو، نه ترکیب با عکس).
-
-    نکته: اگه ویدیو خیلی کوتاه و بدون صدا باشه، تلگرام خودش اون رو به‌صورت
-    GIF/انیمیشن می‌فرسته (نه ویدیوی معمولی)؛ این تابع هر دو حالت رو پوشش
-    می‌ده."""
     chat_id = update.effective_chat.id
 
     if not awaiting_product.get(chat_id):
@@ -398,9 +296,6 @@ async def video_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def _download_with_retry(tg_file, tmp_path: str, attempts: int = 4):
-    """دانلود عکس از تلگرام با چند بار تلاش؛ چون اتصال به تلگرام (به‌خصوص
-    از پشتِ پروکسی) گاهی کند یا ناپایداره و با یه تایم‌اوت پیش‌فرض کوتاه
-    درست کار نمی‌کنه."""
     for attempt in range(1, attempts + 1):
         try:
             await tg_file.download_to_drive(tmp_path)
@@ -432,7 +327,7 @@ async def finalize_submission(context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    raw_description = data["captions"][0]  # کپشنی که کاربر روی یکی از عکس‌ها/ویدیو نوشته
+    raw_description = data["captions"][0]
     is_video = bool(data.get("video_file_id"))
     await context.bot.send_message(
         chat_id,
@@ -487,8 +382,6 @@ async def _send_caption_result(
     raw_description: str,
     caption: str,
 ):
-    """عکس(ها)/ویدیو + کپشنِ تولیدشده رو می‌فرسته و مستقیم کیبورد تصمیم‌گیری
-    (تایید/دوباره‌سازی/ویرایش/لغو) رو زیرش می‌ذاره — بدون مرحله‌ی انتخاب نسخه."""
     media_type = "video" if video_url else "image"
 
     if media_type == "video":
@@ -538,9 +431,6 @@ async def _send_timing_keyboard(context, chat_id, post_id: str):
 
 
 async def _autolink_job(context: ContextTypes.DEFAULT_TYPE):
-    """چند دقیقه بعد از انتشار اجرا می‌شه: خودکار می‌ره تو پروفایلِ پابلیکِ
-    شاپ، لینکِ پستِ تازه رو (با match زدنِ کپشن) پیدا می‌کنه و تو تاریخچه
-    ثبتش می‌کنه — بدون هیچ کاری از طرف مشتری."""
     job_data = context.job.data
     chat_id = job_data["chat_id"]
     caption = job_data["caption"]
@@ -578,9 +468,6 @@ async def _autolink_job(context: ContextTypes.DEFAULT_TYPE):
 
 
 def _schedule_autolink(context, chat_id: int, caption: str, buffer_post_id: str, result: dict) -> None:
-    """اولین تلاش برای پیدا کردنِ خودکارِ لینک رو زمان‌بندی می‌کنه. اگه
-    اسکرپر تنظیم نشده باشه (IG_SCRAPER_USERNAME/SHOP_INSTAGRAM_USERNAME
-    خالی باشن) کاری نمی‌کنه — یعنی فیچرِ آمار ساکت غیرفعال می‌مونه."""
     if not IG_SCRAPER_USERNAME or not SHOP_INSTAGRAM_USERNAME or not buffer_post_id:
         return
 
@@ -649,8 +536,6 @@ async def _publish_post(context, chat_id, post_id: str, status_message, due_at=N
         logger.info(f"پست فروشگاه با موفقیت تو بافر ساخته شد: {result}")
 
         if is_video and post.get("publitio_file_id"):
-            # نیم‌ساعت بعد از زمان واقعیِ انتشار (due_at، یا الان اگه فوری بود)
-            # خودکار از روی Publitio پاک می‌شه تا سقف فضای اکانت رایگان پر نشه
             publitio_host.schedule_delete_at(
                 post["publitio_file_id"], due_at or datetime.datetime.now(TEHRAN_TZ)
             )
@@ -747,7 +632,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.answer(f"⚠️ خطا: {e}", show_alert=True)
         return
 
-    # بقیه‌ی اکشن‌ها (approve/edit/reject/send_now/schedule) به شکل action:post_id هستن
     post_id = parts[1]
     post = pending_posts.get(post_id)
 
@@ -806,9 +690,6 @@ async def text_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
 
     if text in MENU_HANDLERS:
-        # کاربر با زدن دکمه‌ی منو صراحتاً می‌خواد بره سراغ یه بخش دیگه؛ پس اگه
-        # وسط ویرایش کپشن، وارد کردن زمان، تاییدِ لینک، یا انتظارِ لینکِ آمار
-        # بود، اون مرحله رو لغو می‌کنیم
         awaiting_caption_edit.pop(chat_id, None)
         awaiting_schedule_time.pop(chat_id, None)
         awaiting_link_confirm.pop(chat_id, None)
@@ -817,7 +698,6 @@ async def text_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if chat_id in awaiting_stats_link:
-        # کاربر تازه دکمه‌ی «📈 آمار زنده‌ی پست» رو زده و الان لینک رو فرستاده
         awaiting_stats_link.pop(chat_id, None)
         shortcode = instagram_stats.extract_shortcode(text)
         if not shortcode:
@@ -832,11 +712,6 @@ async def text_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if instagram_stats.extract_shortcode(text):
-        # کاربر یه لینکِ اینستاگرام فرستاده. قبلاً اینجا بی‌پرسیدن به
-        # «جدیدترین پستِ بی‌لینک» وصل می‌شد — ولی اگه این لینک به هر دلیلی
-        # (اشتباهی، پستِ نامربوط و غیره) مالِ اون پست نباشه، آمارِ یه پستِ
-        # دیگه به‌جای پستِ خودمون نشون داده می‌شد. برای همین حالا قبل از
-        # وصل‌کردن، کپشنِ پستِ مقصد رو نشون می‌دیم و تایید می‌گیریم.
         candidate = post_history_store.get_latest_unlinked(chat_id)
         if not candidate:
             await update.message.reply_text("این لینک رو به هیچ پستی تو تاریخچه وصل نکردم (پستی بی‌لینک پیدا نشد).")
@@ -886,17 +761,6 @@ async def text_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 def _format_stats_line(stats: "dict | None", had_error: bool = False) -> str:
-    """یه خط کوتاه برای نمایش لایک/ویو زیرِ یه پست تو /history می‌سازه.
-    اگه منبعِ آمار بافر باشه (نه اسکرپِ زنده)، یه علامتِ 🕓 اضافه می‌شه که
-    یعنی «ممکنه تا ۲۴ ساعت قدیمی باشه»، تا با آمارِ لحظه‌ای اشتباه گرفته نشه.
-
-    وقتی هنوز هیچ آماری نداریم دو حالت داریم:
-    - had_error=False: یعنی صرفاً هنوز داده‌ای نرسیده (نه لینک وصل شده، نه
-      بافر هنوز چیزی داده) — این حالت امنه و صریح می‌گیم هنوز آماده نیست.
-    - had_error=True: یه تلاشِ واقعی (مثلاً اسکرپ از اینستاگرام) با خطای فنی
-      مواجه شده (۴۲۹، سشن منقضی، و غیره). این‌جا عمداً هیچی نمی‌گیم و ساکت
-      رد می‌شیم، چون نشون‌دادنِ جزئیاتِ خطای فنی به مشتری بی‌فایده/بد به
-      نظر می‌رسه؛ لاگ سرور برای دیباگ کافیه."""
     if not stats:
         if had_error:
             return ""
@@ -913,17 +777,6 @@ def _format_stats_line(stats: "dict | None", had_error: bool = False) -> str:
 
 
 def _get_cached_or_fresh_stats(chat_id: int, entry: dict) -> "tuple[dict | None, bool]":
-    """آمارِ یه پست رو برمی‌گردونه: (stats, had_error). ترتیبِ اولویت:
-    ۱) کش (اگه به‌اندازه‌ی کافی تازه باشه)
-    ۲) اسکرپِ زنده از رو لینکِ اینستاگرام (instaloader) — اگه لینک پیدا شده باشه
-    ۳) fallback: آمارِ آزمایشیِ خودِ بافر از رو buffer_post_id (ممکنه تا
-       ۲۴ساعت قدیمی باشه، ولی نیازی به لینک نداره و رسمیه)
-    اگه هیچ‌کدوم جواب نداد، هر چی کش شده (حتی قدیمی) رو برمی‌گردونه، یا None.
-
-    had_error فقط وقتی True می‌شه که تلاشِ اسکرپِ اینستاگرام واقعاً با یه
-    خطای فنی مواجه شده باشه (نه صرفاً چون لینک هنوز وصل نشده)؛ برای اینکه
-    _format_stats_line بتونه بینِ «هنوز آماده نیست» و «یه مشکل فنی پیش
-    اومد» فرق بذاره."""
     cached = entry.get("stats")
     if cached:
         checked_at = datetime.datetime.fromisoformat(cached["checked_at"])
@@ -953,15 +806,10 @@ def _get_cached_or_fresh_stats(chat_id: int, entry: dict) -> "tuple[dict | None,
             post_history_store.save_stats(chat_id, entry["buffer_post_id"], fresh)
         return fresh, False
 
-    return cached, had_error  # هیچ‌کدوم جواب نداد؛ هر چی از قبل کش بود (حتی قدیمی) رو بده
+    return cached, had_error
 
 
 async def stats_dashboard_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """دکمه‌ی «🚀 عملکرد پیج» — برخلافِ /history که فقط لیستِ خامِ پست‌هاست،
-    اینجا یه خلاصه‌ی جمع‌بندی‌شده و رو-هم‌ریخته (مجموعِ لایک/کامنت/ویو،
-    پرطرفدارترین پست) بالای صفحه میاد، بعد لیستِ تک‌تکِ پست‌ها زیرش —
-    برای اینکه صاحبِ فروشگاه یه نگاهِ سریع و قشنگ به کلِ عملکردِ پیجش
-    داشته باشه، نه فقط یه لیستِ خشکِ تاریخچه."""
     chat_id = update.effective_chat.id
     entries = post_history_store.get_history(chat_id, limit=15)
     if not entries:
@@ -975,7 +823,7 @@ async def stats_dashboard_command(update: Update, context: ContextTypes.DEFAULT_
     status_message = await update.message.reply_text("⏳ در حال جمع‌آوریِ آمارِ همه‌ی پست‌ها...")
 
     total_likes = total_comments = total_views = 0
-    best = None  # (likes, caption_preview)
+    best = None
     rows = []
 
     for e in entries:
@@ -1038,12 +886,6 @@ async def history_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def _lookup_and_format_stats(url: str) -> "tuple[str | None, str | None]":
-    """لایک/کامنت/ویوی یه لینکِ پست رو می‌گیره و به‌صورتِ یه متنِ آماده‌ی
-    نمایش برمی‌گردونه. خروجی: (متنِ موفق, None) یا (None, متنِ خطا) — دقیقاً
-    یکی از این دو تا پر می‌شه، هیچ‌وقت هر دو با هم.
-
-    این تابع منطقِ مشترکِ /stats و دکمه‌ی منوی «📈 آمار زنده‌ی پست» رو یه‌جا
-    نگه می‌داره تا هر دو مسیر دقیقاً یه رفتار داشته باشن."""
     if not IG_SCRAPER_USERNAME:
         return None, (
             "⚠️ فیچر آمار فعال نیست — اول باید یه‌بار instagram_login.py رو اجرا "
@@ -1067,8 +909,6 @@ async def _lookup_and_format_stats(url: str) -> "tuple[str | None, str | None]":
 
 
 async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """/stats <لینک پست اینستاگرام> — لایک/ویو رو فوری، بدون نیاز به اینکه
-    قبلاً تو تاریخچه ثبت شده باشه، نشون می‌ده."""
     if not context.args:
         await update.message.reply_text("لینک پست رو بعد از دستور بفرست، مثلاً:\n/stats https://www.instagram.com/p/ABC123/")
         return
@@ -1077,9 +917,6 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def stats_menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """دکمه‌ی «📈 آمار زنده‌ی پست» — همون کارِ /stats رو می‌کنه، ولی
-    مکالمه‌ای: اول ازِ کاربر لینک رو می‌پرسه، بعد تو پیامِ بعدی (که تو
-    text_received پردازش می‌شه) نتیجه رو نشون می‌ده."""
     chat_id = update.effective_chat.id
     if not IG_SCRAPER_USERNAME:
         await update.message.reply_text(
@@ -1097,8 +934,6 @@ async def stats_menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 
 async def products_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """آرشیو محصولاتی که قبلاً پست شدن، با عکس کوچیک، برای پیدا کردنِ سریع یه
-    محصول قدیمی (مثلاً برای پست دوباره یا تغییر قیمت)."""
     chat_id = update.effective_chat.id
     entries = post_history_store.get_history(chat_id, limit=10)
     if not entries:
@@ -1112,7 +947,7 @@ async def products_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         caption = (
             f"{status_label} {dt.strftime('%Y-%m-%d %H:%M')}\n«{e['caption_preview']}...»"
         )
-        image_urls = e.get("image_urls") or []  # پست‌های قدیمی‌تر ممکنه این فیلد رو نداشته باشن
+        image_urls = e.get("image_urls") or []
         if not image_urls:
             await update.message.reply_text(caption)
         elif len(image_urls) == 1:
@@ -1124,8 +959,6 @@ async def products_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def scheduled_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """پست‌های زمان‌بندی‌شده‌ی این فروشگاه که هنوز منتشر نشدن رو با یه دکمه‌ی
-    ❌ نشون می‌ده تا در صورت نیاز از بافر (و از تاریخچه) پاک بشن."""
     chat_id = update.effective_chat.id
     entries = post_history_store.get_scheduled(chat_id)
     if not entries:
@@ -1145,9 +978,6 @@ async def scheduled_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(caption, reply_markup=keyboard)
 
 
-# نگاشتِ برچسبِ دکمه‌های منو به همون تابعِ دستورِ متنیِ معادلش؛ چون
-# text_received به‌جای این تابع تعریف شده، اینجا (پایین‌تر از تعریف همه‌ی
-# دستورها) قرارش می‌دیم تا موقع بارگذاریِ ماژول با NameError روبه‌رو نشیم
 MENU_HANDLERS = {
     MENU_NEW: new_command,
     MENU_HISTORY: history_command,
@@ -1160,8 +990,6 @@ MENU_HANDLERS = {
 
 
 async def weekly_report_job(context: ContextTypes.DEFAULT_TYPE):
-    """هر یکشنبه صبح، برای هر فروشگاهی که حداقل تو ۷ روز اخیر یه پست فرستاده،
-    یه پیام خلاصه می‌فرسته. فروشگاه‌هایی که این هفته پستی نفرستادن، مزاحمشون نمی‌شیم"""
     since = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=7)
     for chat_id in post_history_store.all_chat_ids():
         count = post_history_store.count_since(chat_id, since)
@@ -1177,9 +1005,6 @@ async def weekly_report_job(context: ContextTypes.DEFAULT_TYPE):
 
 
 async def inactivity_reminder_job(context: ContextTypes.DEFAULT_TYPE):
-    """هر روز چک می‌کنه: هر فروشگاهی (چه قبلاً پستی داشته، چه فقط /profile
-    زده) که تو ۲ روز اخیر هیچ پستی نفرستاده، یه یادآوری می‌گیره. تا وقتی دوباره
-    پست نفرسته، این یادآوری هر روز تکرار می‌شه."""
     since = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=2)
     known_chat_ids = set(post_history_store.all_chat_ids()) | set(shop_profile_chat_ids())
     for chat_id in known_chat_ids:
@@ -1196,15 +1021,6 @@ async def inactivity_reminder_job(context: ContextTypes.DEFAULT_TYPE):
 
 
 def _reschedule_pending_autolinks(job_queue) -> None:
-    """موقعِ روشن‌شدنِ بات صدا زده می‌شه. تایمرهای autolink فقط تو حافظه‌ی
-    برنامه زنده‌ن (JobQueue داخلیِ کتابخونه، نه فایل رو دیسک)؛ یعنی هر بار
-    که بات با Ctrl+C بسته و دوباره باز می‌شه، هر تلاشِ باقی‌مونده‌ای که
-    قرار بوده چند دقیقه/ساعتِ بعد دوباره اجرا بشه، کاملاً از بین می‌ره —
-    بدون این‌که هیچ خطا یا لاگی نشون بده. این تابع دقیقاً همین حفره رو پر
-    می‌کنه: هر پستی که تو فایلِ تاریخچه هنوز instagram_url نداره رو پیدا
-    می‌کنه و از تلاشِ اول دوباره تو صف می‌ذاره؛ با کمی فاصله بینِ هرکدوم
-    (stagger) که همه‌شون یهو با هم به اینستاگرام درخواست نزنن و ریسکِ ۴۲۹
-    رو بالا نبرن."""
     if not IG_SCRAPER_USERNAME or not SHOP_INSTAGRAM_USERNAME:
         return
 
@@ -1252,10 +1068,9 @@ def main():
         .pool_timeout(30)
     )
     if TELEGRAM_PROXY_URL:
-        # هم برای درخواست‌های عادی (ارسال پیام/عکس) و هم برای گرفتن آپدیت‌ها (polling)
-        # باید پروکسی رو جدا ست کنیم، وگرنه فقط یکی از این دو مسیر از پروکسی رد می‌شه
         builder = builder.proxy(TELEGRAM_PROXY_URL).get_updates_proxy(TELEGRAM_PROXY_URL)
         logger.info(f"در حال استفاده از پروکسی برای اتصال به تلگرام: {TELEGRAM_PROXY_URL}")
+        
     app = builder.build()
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("menu", start_command))
@@ -1269,10 +1084,11 @@ def main():
     app.add_handler(MessageHandler(filters.VIDEO | filters.ANIMATION, video_received))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_received))
     app.add_handler(CallbackQueryHandler(button_callback))
+    
     app.job_queue.run_daily(
         weekly_report_job,
         time=datetime.time(hour=10, minute=0, tzinfo=TEHRAN_TZ),
-        days=(6,),  # طبق قرارداد کتابخونه: دوشنبه=۰ ... یکشنبه=۶
+        days=(6,),
         name="weekly_report",
     )
     app.job_queue.run_daily(
@@ -1280,15 +1096,15 @@ def main():
         time=datetime.time(hour=11, minute=0, tzinfo=TEHRAN_TZ),
         name="inactivity_reminder",
     )
-    # ترد پس‌زمینه‌ای که هر ۶۰ ثانیه ویدیوهای سررسیدشده رو از Publitio پاک
-    # می‌کنه (نیم‌ساعت بعد از due_at هر پست)؛ فقط همین یه‌بار صداش می‌زنیم
+    
     publitio_host.start_background_cleaner()
 
-    # هر پستی که به‌خاطرِ بستنِ قبلیِ بات (Ctrl+C) هنوز لینکِ اینستاگرامش
-    # پیدا نشده مونده رو دوباره تو صف می‌ذاریم
     _reschedule_pending_autolinks(app.job_queue)
 
     logger.info("بات فروشگاه (مستقل) روشن شد...")
+    
+    # حل ارور RuntimeError مربوط به پایتون 3.14 و Event Loop
+    asyncio.set_event_loop(asyncio.new_event_loop())
     app.run_polling()
 
 
